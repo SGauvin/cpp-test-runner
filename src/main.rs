@@ -8,7 +8,7 @@ use std::{ops::Deref, path::PathBuf};
 
 use anyhow::{bail, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use executable_finder::{find_gtest_executables, find_test_dir};
+use executable_finder::{find_gtest_executables, find_test_dir, validate_executables};
 use gtest_parser::get_all_tests_from_executables;
 use test_runner::run_all;
 use types::Test;
@@ -36,10 +36,8 @@ impl Cli {
 
 #[derive(Default, Debug, Parser)]
 struct CommonFlags {
-    /// The directory where to search for gtest executables. By default, if the path is relative, this program will search
-    /// up the parent directories until it finds the test directory.
-    #[arg(long, default_value_t = String::from("."))]
-    test_dir: String,
+    #[clap(flatten)]
+    input: Option<Input>,
 
     /// Don't look up in parent directories when searching for the test directory.
     #[arg(long)]
@@ -56,6 +54,20 @@ struct CommonFlags {
     /// Extra arguments to pass to the test executables.
     #[arg(long, value_delimiter = ',')]
     extra_args: Vec<String>,
+}
+
+#[derive(Args, Default, Debug)]
+#[group(multiple = false)]
+struct Input {
+    /// The directory where to search for gtest executables.
+    /// By default, if the path is relative, this program will search up the parent directories
+    /// until it finds the test directory. Mutually exclusive with --executables. [default: .]
+    #[arg(long, group = "input")]
+    test_dir: Option<String>,
+
+    /// List all executables instead of searching them. Mutually exclusive with --test-dir.
+    #[arg(long, group = "input", value_delimiter = ',')]
+    executables: Vec<PathBuf>,
 }
 
 #[derive(ValueEnum, Debug, Clone, Default)]
@@ -76,13 +88,13 @@ enum OutputFormat {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Find and list all tests and their executables
+    /// Find and list all tests and their executables.
     List(ListCommand),
 
-    /// Print a vscode-compatible launch.json
+    /// Print a vscode-compatible launch.json.
     LaunchJson(LaunchJsonCommand),
 
-    /// Run tests
+    /// Run tests.
     Run(RunCommand),
 }
 
@@ -101,11 +113,11 @@ struct ListCommand {
     #[clap(flatten)]
     common_flags: CommonFlags,
 
-    /// Include elf metadata of the binary files
+    /// Include elf metadata of the binary files.
     #[arg(long)]
     elf_metadata: bool,
 
-    /// Choose the output format of the list
+    /// Choose the output format of the list.
     #[arg(long, value_enum, default_value = "json")]
     output: OutputFormat,
 }
@@ -131,8 +143,7 @@ struct LaunchJsonCommand {
     #[arg(long, default_value = "launch")]
     launch_request: String,
 
-    /// The cwd of the tests. Change launch-cwd-relative-to to modify to what the cwd is relative
-    /// to.
+    /// The cwd of the tests. Change launch-cwd-relative-to to modify to what the cwd is relative to.
     #[arg(long, value_enum, default_value = ".")]
     launch_cwd: PathBuf,
 
@@ -144,15 +155,15 @@ struct LaunchJsonCommand {
     #[arg(long)]
     add_exec_path_to_name: bool,
 
-    /// Only print the list of configurations
+    /// Only print the list of configurations.
     #[arg(long)]
     configurations_only: bool,
 
-    /// Add the stopAtEntry option to the config
+    /// Add the stopAtEntry option to the config.
     #[arg(long)]
     stop_at_entry: bool,
 
-    /// Enable pretty printing in the debugger
+    /// Enable pretty printing in the debugger.
     #[arg(long)]
     pretty_printing: bool,
 }
@@ -162,7 +173,7 @@ struct RunCommand {
     #[clap(flatten)]
     common_flags: CommonFlags,
 
-    /// Enable or disable colored output
+    /// Enable or disable colored output.
     #[arg(long, value_enum, default_value = "auto")]
     color: ColorOption,
 }
@@ -176,14 +187,26 @@ fn main() -> Result<()> {
             .build_global()?;
     }
 
-    let Some(test_dir) =
-        find_test_dir(&args.common_flags().test_dir, args.common_flags().no_parent)?
-    else {
-        bail!(format!(
-            "test_dir {} not found",
-            &args.common_flags().test_dir
-        ));
-    };
+    let input = args.common_flags().input.as_ref();
+    let executables = {
+        let cli_executables = input
+            .map(|input| input.executables.clone())
+            .unwrap_or(Default::default());
+
+        if !cli_executables.is_empty() {
+            validate_executables(&cli_executables, args.common_flags().no_parent)
+        } else {
+            let test_dir = input
+                .and_then(|input| input.test_dir.clone())
+                .unwrap_or_else(|| String::from("."));
+
+            let Some(test_dir) = find_test_dir(&test_dir, args.common_flags().no_parent)? else {
+                bail!("test_dir {test_dir} not found");
+            };
+
+            find_gtest_executables(&test_dir, args.elf_metadata())
+        }
+    }?;
 
     let extra_args = args
         .common_flags()
@@ -198,7 +221,6 @@ fn main() -> Result<()> {
         })
         .collect::<Vec<_>>();
 
-    let executables = find_gtest_executables(&test_dir, args.elf_metadata())?;
     let tests = if args.common_flags().executables_only {
         executables
             .into_iter()

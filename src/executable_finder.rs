@@ -1,10 +1,10 @@
 use crate::types::{ElfMetaData, GtestExecutable};
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use goblin::{
     elf::{Elf, SectionHeader},
     Object,
 };
-use rayon::iter::{ParallelBridge, ParallelIterator};
+use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 use std::{
     io::Read,
     os::unix::fs::PermissionsExt,
@@ -38,6 +38,24 @@ pub fn find_test_dir(cli_path: &str, cli_no_parent: bool) -> Result<Option<PathB
 
         current_dir = parent_dir.to_path_buf();
     }
+}
+
+pub fn validate_executables(
+    executables: &[PathBuf],
+    read_elf_metadata: bool,
+) -> Result<Vec<GtestExecutable>> {
+    executables
+        .par_iter()
+        .map(|path| {
+            let Ok(Some(gtest_executable)) = parse_gtest_executable(path, read_elf_metadata) else {
+                return Err(anyhow!(format!(
+                    "{} is not a gtest executable",
+                    path.display()
+                )));
+            };
+            Ok(gtest_executable)
+        })
+        .collect::<Result<Vec<_>>>()
 }
 
 pub fn find_gtest_executables(
