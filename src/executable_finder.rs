@@ -1,15 +1,14 @@
-use crate::types::{ElfMetaData, GtestExecutable};
+use crate::types::GtestExecutable;
 use anyhow::{anyhow, Result};
-use goblin::{
-    elf::{Elf, SectionHeader},
-    Object,
-};
-use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
+use bytemuck::{Pod, Zeroable};
+use faccess::PathExt;
+use ignore::WalkBuilder;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::{
-    io::Read,
-    os::unix::fs::PermissionsExt,
+    io::{Read, Seek, SeekFrom},
+    os::{raw::c_uchar, unix::fs::FileExt},
     path::{Path, PathBuf},
-    time::UNIX_EPOCH,
+    thread,
 };
 
 pub fn find_test_dir(cli_path: &str, cli_no_parent: bool) -> Result<Option<PathBuf>> {
@@ -40,6 +39,107 @@ pub fn find_test_dir(cli_path: &str, cli_no_parent: bool) -> Result<Option<PathB
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+pub struct Elf64Sym {
+    pub st_name: u32,
+    pub st_info: c_uchar,
+    pub st_other: c_uchar,
+    pub st_shndx: u16,
+    pub st_value: u64,
+    pub st_size: u64,
+}
+
+fn get_u64(data: &[u8], offset: u64, is_little_endian: bool) -> u64 {
+    let offset = offset as usize;
+    if is_little_endian {
+        u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap())
+    } else {
+        u64::from_be_bytes(data[offset..offset + 8].try_into().unwrap())
+    }
+}
+
+fn get_u32(data: &[u8], offset: u64, is_little_endian: bool) -> u32 {
+    let offset = offset as usize;
+    if is_little_endian {
+        u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
+    } else {
+        u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap())
+    }
+}
+
+fn get_u16(data: &[u8], offset: u64, is_little_endian: bool) -> u16 {
+    let offset = offset as usize;
+    if is_little_endian {
+        u16::from_le_bytes(data[offset..offset + 2].try_into().unwrap())
+    } else {
+        u16::from_be_bytes(data[offset..offset + 2].try_into().unwrap())
+    }
+}
+
+fn get_u8(data: &[u8], offset: u64, is_little_endian: bool) -> u8 {
+    let offset = offset as usize;
+    if is_little_endian {
+        u8::from_le_bytes(data[offset..offset + 1].try_into().unwrap())
+    } else {
+        u8::from_be_bytes(data[offset..offset + 1].try_into().unwrap())
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct SectionHeader {
+    data: [u8; 64],
+}
+
+impl Default for SectionHeader {
+    fn default() -> Self {
+        Self { data: [0u8; 64] }
+    }
+}
+
+impl SectionHeader {
+    fn sh_name(&self, is_little_endian: bool) -> u32 {
+        get_u32(&self.data, 0x00, is_little_endian)
+    }
+
+    fn sh_type(&self, is_little_endian: bool) -> u32 {
+        get_u32(&self.data, 0x04, is_little_endian)
+    }
+
+    fn sh_flags(&self, is_little_endian: bool) -> u64 {
+        get_u64(&self.data, 0x08, is_little_endian)
+    }
+
+    fn sh_addr(&self, is_little_endian: bool) -> u64 {
+        get_u64(&self.data, 0x10, is_little_endian)
+    }
+
+    fn sh_offset(&self, is_little_endian: bool) -> u64 {
+        get_u64(&self.data, 0x18, is_little_endian)
+    }
+
+    fn sh_size(&self, is_little_endian: bool) -> u64 {
+        get_u64(&self.data, 0x20, is_little_endian)
+    }
+
+    fn sh_link(&self, is_little_endian: bool) -> u32 {
+        get_u32(&self.data, 0x28, is_little_endian)
+    }
+
+    fn sh_info(&self, is_little_endian: bool) -> u32 {
+        get_u32(&self.data, 0x2C, is_little_endian)
+    }
+
+    fn sh_addralign(&self, is_little_endian: bool) -> u64 {
+        get_u64(&self.data, 0x30, is_little_endian)
+    }
+
+    fn sh_entsize(&self, is_little_endian: bool) -> u64 {
+        get_u64(&self.data, 0x38, is_little_endian)
+    }
+}
+
 pub fn validate_executables(
     executables: &[PathBuf],
     read_elf_metadata: bool,
@@ -62,105 +162,119 @@ pub fn find_gtest_executables(
     path: &Path,
     read_elf_metadata: bool,
 ) -> Result<Vec<GtestExecutable>> {
-    Ok(walkdir::WalkDir::new(path)
-        .into_iter()
-        .par_bridge()
-        .flatten()
-        .filter_map(|entry| {
-            if entry.path().is_file()
-                && entry
-                    .metadata()
-                    // check if executable
-                    .map(|metadata| metadata.permissions().mode() & 0b001001001 != 0)
-                    .unwrap_or(false)
-            {
-                parse_gtest_executable(entry.path(), read_elf_metadata)
-                    .ok()
-                    .flatten()
-            } else {
-                None
+    let walker = WalkBuilder::new(path)
+        .hidden(false)
+        .ignore(false)
+        .parents(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .require_git(false)
+        .follow_links(false)
+        .threads(0)
+        .build_parallel();
+
+    let (tx, rx) = crossbeam::channel::bounded::<GtestExecutable>(100);
+
+    let mut vec = Vec::<GtestExecutable>::default();
+
+    thread::scope(|scope| {
+        scope.spawn(|| loop {
+            match rx.recv() {
+                Ok(test) => {
+                    vec.push(test);
+                }
+                Err(_) => {
+                    return;
+                }
             }
-        })
-        .collect::<Vec<_>>())
+        });
+
+        walker.run(|| {
+            let tx = tx.clone();
+            Box::new(move |result| {
+                let path = result.as_ref().unwrap().path();
+                if path.is_file() && path.executable() {
+                    if let Some(test) = parse_gtest_executable(path, read_elf_metadata)
+                        .ok()
+                        .flatten()
+                    {
+                        tx.send(test).unwrap();
+                    }
+                }
+                ignore::WalkState::Continue
+            })
+        });
+
+        drop(tx);
+    });
+
+    Ok(vec)
 }
 
-fn get_section_data(elf: &Elf, buffer: &[u8], section: &str) -> Result<Vec<String>> {
-    Ok(elf
-        .section_headers
-        .iter()
-        .filter_map(|header: &SectionHeader| {
-            if &elf.shdr_strtab[header.sh_name] == section {
-                let start: usize = header.sh_offset as usize;
-                let end: usize = start + header.sh_size as usize;
-                let data = &buffer[start..end];
-                Some(
-                    data.split(|c| *c == 0)
-                        .filter(|data| !data.is_empty())
-                        .map(|data| String::from_utf8_lossy(data).as_ref().to_owned())
-                        .collect::<Vec<_>>(),
-                )
-            } else {
-                // println!("Section name: {}", &elf.shdr_strtab[header.sh_name]);
-                None
-            }
-        })
-        .flatten()
-        .collect::<Vec<_>>())
-}
-
-fn parse_gtest_executable(path: &Path, read_elf_metadata: bool) -> Result<Option<GtestExecutable>> {
+pub fn parse_gtest_executable(
+    path: &Path,
+    _read_elf_metadata: bool,
+) -> Result<Option<GtestExecutable>> {
     let mut file = std::fs::File::open(path)?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
 
-    let Object::Elf(elf) = Object::parse(&buffer)? else {
-        return Ok(None);
+    let mut header_buffer = [0u8; 64]; // Read only the first 64 bytes
+    file.read_exact(&mut header_buffer)?;
+
+    let is_little_endian = { u8::from_le_bytes(header_buffer[0x5..0x6].try_into().unwrap()) == 1 };
+
+    let is_64_bits_executable_elf = {
+        let is_elf = &header_buffer[0..4] == b"\x7FELF";
+        let is_executable = {
+            let e_type = get_u16(&header_buffer, 0x10, is_little_endian);
+            e_type == 2 || e_type == 3
+        };
+        let has_valid_entry_point = get_u64(&header_buffer, 0x18, is_little_endian) != 0;
+        let section_header_entry_size_is_64 = get_u16(&header_buffer, 0x3A, is_little_endian) == 64;
+
+        is_elf && is_executable && has_valid_entry_point && section_header_entry_size_is_64
     };
 
-    let is_gtest = elf
-        .strtab
-        .to_vec()?
-        .into_iter()
-        .any(|symbol: &str| symbol.contains("InitGoogleTest"));
-
-    if !is_gtest {
+    if !is_64_bits_executable_elf {
         return Ok(None);
     }
 
-    let modified_time = std::fs::metadata(path)
-        .unwrap()
-        .modified()
-        .unwrap()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+    let section_header_offset = get_u64(&header_buffer, 0x28, is_little_endian);
+    let section_header_count = get_u16(&header_buffer, 0x3C, is_little_endian);
 
-    let elf_metadata = if read_elf_metadata {
-        let elf_comments = get_section_data(&elf, &buffer, ".comment")?;
-        let dynamic_libraries = elf
-            .dynamic
-            .map(|dynamic| {
-                dynamic
-                    .dyns
-                    .iter()
-                    .filter(|dyn_entry| dyn_entry.d_tag == goblin::elf::dynamic::DT_NEEDED)
-                    .filter_map(|dyn_entry| elf.dynstrtab.get_at(dyn_entry.d_val as usize))
-                    .map(|lib_str| lib_str.to_owned())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+    let all_section_headers = {
+        let mut all_section_headers: Vec<SectionHeader> =
+            std::iter::repeat(SectionHeader::default())
+                .take(section_header_count as usize)
+                .collect();
 
-        Some(ElfMetaData {
-            comments: elf_comments,
-            dynamic_libraries,
-        })
-    } else {
-        None
+        let all_section_headers_bytes: &mut [u8] =
+            bytemuck::try_cast_slice_mut(&mut all_section_headers).unwrap();
+
+        file.read_exact_at(all_section_headers_bytes, section_header_offset)?;
+
+        all_section_headers
     };
 
-    Ok(Some(GtestExecutable {
-        path: path.to_owned(),
-        elf_metadata,
-        modified: modified_time,
-    }))
+    let Some(symbol_table) = all_section_headers
+        .iter()
+        .find(|x| x.sh_type(is_little_endian) == 2)
+    else {
+        return Ok(None);
+    };
+
+    let Some(string_table) =
+        all_section_headers.get(symbol_table.sh_link(is_little_endian) as usize)
+    else {
+        return Ok(None);
+    };
+
+    println!(
+        "{}: {} && {}",
+        path.display(),
+        string_table.sh_type(is_little_endian),
+        string_table.sh_flags(is_little_endian) & 0x20 != 0
+    );
+
+    Ok(None)
 }
