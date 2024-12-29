@@ -1,11 +1,10 @@
 use colored::Colorize;
 use std::{
-    ops::Deref,
     process::Command,
     sync::{atomic::AtomicUsize, Mutex},
 };
 
-use crate::types::Test;
+use crate::types::{ExecutableType, Test};
 use anyhow::Result;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
@@ -15,8 +14,20 @@ pub fn run_all(tests: &[Test], use_color: bool) -> Result<()> {
 
     tests.par_iter().for_each(|test| {
         let mut args = test.arguments.clone();
-        if use_color {
-            args.push("--gtest_color=yes".to_string());
+
+        match (use_color, &test.executable.executable_type) {
+            (true, ExecutableType::Gtest) => {
+                args.push("--gtest_color=yes".to_string());
+            }
+            (false, ExecutableType::Gtest) => {
+                args.push("--gtest_color=no".to_string());
+            }
+            (true, ExecutableType::Catch2) => {
+                args.push("--colour-mode=ansi".to_string());
+            }
+            (false, ExecutableType::Catch2) => {
+                args.push("--colour-mode=none".to_string());
+            }
         }
 
         let output = Command::new(&test.executable.path)
@@ -41,27 +52,44 @@ pub fn run_all(tests: &[Test], use_color: bool) -> Result<()> {
             DESIRED_LINE_LEN - to_print_first_part.len() - to_print_last_part.len();
         let filling = ".".repeat(number_of_chars_missing);
 
-        let to_print = if test_passed {
-            format!("{to_print_first_part}{filling}{to_print_last_part}")
-        } else {
-            let stdout = String::from_utf8_lossy(&output.stdout).deref().to_string();
-            format!("{to_print_first_part}{filling}{to_print_last_part}\n\n{stdout}")
+        let color_output = |output: &str| -> String {
+            match (use_color, test_passed) {
+                (true, true) => output.green().to_string(),
+                (true, false) => output.red().to_string(),
+                (false, _) => output.to_string(),
+            }
         };
 
-        let to_print = match (use_color, test_passed) {
-            (true, true) => to_print.green(),
-            (true, false) => to_print.red(),
-            (false, _) => to_print.into(),
+        let first_line = color_output(&format!(
+            "{to_print_first_part}{filling}{to_print_last_part}"
+        ));
+
+        let to_print = if test_passed {
+            first_line
+        } else {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            format!("{first_line}\n\n{}\n", stdout.trim())
         };
 
         println!("{to_print}");
     });
 
     let num_tests_passed = num_tests_passed.load(std::sync::atomic::Ordering::Relaxed);
+    let num_tests_failed = tests.len() - num_tests_passed;
     println!(
-        "{} tests passed, {} tests failed",
+        "{} {} passed, {} {} failed",
         num_tests_passed,
-        tests.len() - num_tests_passed
+        if num_tests_passed > 1 {
+            "tests"
+        } else {
+            "test"
+        },
+        num_tests_failed,
+        if num_tests_failed > 1 {
+            "tests"
+        } else {
+            "test"
+        },
     );
 
     Ok(())

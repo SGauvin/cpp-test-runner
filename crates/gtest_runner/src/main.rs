@@ -1,22 +1,15 @@
 mod executable_finder;
-mod gtest_parser;
+mod test_parser;
 mod test_runner;
 mod types;
 mod vscode_launch_json_formatter;
 
-use std::{ops::Deref, path::PathBuf};
-
 use anyhow::{bail, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use crossbeam::thread;
-use executable_finder::{
-    find_gtest_executables, find_test_dir, parse_gtest_executable, validate_executables,
-};
-use faccess::PathExt;
-use gtest_parser::get_all_tests_from_executables;
-use ignore::WalkBuilder;
+use executable_finder::{find_test_executables, find_test_dir, validate_executables};
+use test_parser::get_tests_from_executables;
+use std::path::PathBuf;
 use test_runner::run_all;
-use types::Test;
 use vscode_launch_json_formatter::format_tests_to_vscode_launch_json;
 
 #[derive(Parser)]
@@ -29,13 +22,6 @@ struct Cli {
 impl Cli {
     fn common_flags(&self) -> &CommonFlags {
         self.command.common_flags()
-    }
-
-    fn elf_metadata(&self) -> bool {
-        match &self.command {
-            Command::List(cmd) => cmd.elf_metadata,
-            _ => false,
-        }
     }
 }
 
@@ -118,10 +104,6 @@ struct ListCommand {
     #[clap(flatten)]
     common_flags: CommonFlags,
 
-    /// Include elf metadata of the binary files.
-    #[arg(long)]
-    elf_metadata: bool,
-
     /// Choose the output format of the list.
     #[arg(long, value_enum, default_value = "json")]
     output: OutputFormat,
@@ -200,7 +182,7 @@ fn main() -> Result<()> {
             .unwrap_or(Default::default());
 
         if !cli_executables.is_empty() {
-            validate_executables(&cli_executables, args.common_flags().no_parent)
+            validate_executables(&cli_executables)
         } else {
             let test_dir = input
                 .and_then(|input| input.test_dir.clone())
@@ -210,27 +192,14 @@ fn main() -> Result<()> {
                 bail!("test_dir {test_dir} not found");
             };
 
-            find_gtest_executables(&test_dir, args.common_flags().jobs, args.elf_metadata())
+            find_test_executables(&test_dir, args.common_flags().jobs)
         }
     }?;
 
-    let extra_args = args
-        .common_flags()
-        .extra_args
-        .iter()
-        .map(|x| {
-            if x.starts_with("-") {
-                x.clone()
-            } else {
-                format!("--{x}")
-            }
-        })
-        .collect::<Vec<_>>();
-
-    let tests = get_all_tests_from_executables(
+    let tests = get_tests_from_executables(
         &executables,
         args.common_flags().executables_only,
-        &extra_args,
+        &args.common_flags().extra_args,
     );
 
     match args.command {

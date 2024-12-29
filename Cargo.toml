@@ -1,5 +1,8 @@
 [workspace]
+
 members = [
     "crates/gtest_runner",
     "crates/elf_parser",
 ]
+
+resolver = "2"

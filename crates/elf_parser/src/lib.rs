@@ -66,8 +66,8 @@ pub trait FetchInteger {
 
 #[derive(Debug)]
 pub struct Elf {
+    pub header: Header,
     file: std::fs::File,
-    header: Header,
 }
 
 impl Elf {
@@ -115,16 +115,10 @@ impl Elf {
         })
     }
 
-    pub fn get_section_header_raw_data(
+    pub fn get_section(
         &self,
         section_header: &SectionHeader,
     ) -> std::result::Result<Section, io::Error> {
-        let data_size = section_header.sh_size();
-        let mut data: Vec<u8> = std::iter::repeat(0u8).take(data_size as usize).collect();
-        if !data.is_empty() {
-            self.file.read_exact_at(&mut data, self.header.e_shoff())?;
-        }
-
         let header_type = section_header.sh_type();
         Ok(match header_type {
             0x2 => {
@@ -132,12 +126,23 @@ impl Elf {
                     .take(section_header.sh_size() as usize / std::mem::size_of::<Elf64Sym>())
                     .collect();
 
-                let symbols_bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut symbols);
-                self.file
-                    .read_exact_at(symbols_bytes, section_header.sh_offset())?;
-                Section::Symbols(SymbolTable { symbols })
+                self.file.read_exact_at(
+                    bytemuck::cast_slice_mut(&mut symbols),
+                    section_header.sh_offset(),
+                )?;
+
+                Section::Symbols(symbols)
             }
-            0x3 => Section::Strings(StringTable { data }),
+            0x3 => {
+                let mut data: Vec<u8> = std::iter::repeat(0u8)
+                    .take(section_header.sh_size() as usize)
+                    .collect();
+
+                self.file
+                    .read_exact_at(&mut data, section_header.sh_offset())?;
+
+                Section::Strings(StringTable { data })
+            }
             _ => Section::NotImplemented,
         })
     }
@@ -234,7 +239,7 @@ pub struct SectionHeaders {
 }
 
 impl SectionHeaders {
-    pub fn find_symbol_table(&self) -> Option<&SectionHeader> {
+    pub fn find_symbol_table_header(&self) -> Option<&SectionHeader> {
         self.headers.iter().find(|section| section.sh_type() == 2)
     }
 }
@@ -298,13 +303,9 @@ impl SectionHeader {
 }
 
 pub enum Section {
-    Symbols(SymbolTable),
+    Symbols(Vec<Elf64Sym>),
     Strings(StringTable),
     NotImplemented,
-}
-
-pub struct SymbolTable {
-    pub symbols: Vec<Elf64Sym>,
 }
 
 #[repr(C)]

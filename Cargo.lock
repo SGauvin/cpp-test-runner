@@ -290,6 +290,7 @@ dependencies = [
  "clap",
  "colored",
  "crossbeam",
+ "elf_parser",
  "faccess",
  "ignore",
  "rayon",

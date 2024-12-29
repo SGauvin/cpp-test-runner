@@ -1,27 +1,26 @@
 use serde::Serialize;
 use std::path::PathBuf;
 
-#[derive(Default, Debug, Serialize, Clone)]
-pub struct ElfMetaData {
-    pub comments: Vec<String>,
-    pub dynamic_libraries: Vec<String>,
-}
-
-#[derive(Default, Debug, Serialize, Clone)]
-pub struct GtestExecutable {
+#[derive(Debug, Serialize, Clone)]
+pub struct Executable {
     pub path: PathBuf,
     pub modified: u128,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub elf_metadata: Option<ElfMetaData>,
+    pub executable_type: ExecutableType,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub enum ExecutableType {
+    Gtest,
+    Catch2,
 }
 
 #[derive(Debug, Serialize, Clone)]
 pub struct Test {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub file: Option<String>,
+    pub file: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
-    pub executable: GtestExecutable,
+    pub executable: Executable,
     pub arguments: Vec<String>,
 }
