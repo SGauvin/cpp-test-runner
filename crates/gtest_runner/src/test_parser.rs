@@ -1,7 +1,13 @@
 use crate::types::{Executable, ExecutableType, Test};
 use anyhow::{bail, Result};
 use serde::Deserialize;
-use std::{ops::Deref, path::PathBuf, process::Command};
+use std::{
+    borrow::Cow,
+    env::current_dir,
+    ops::Deref,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 #[derive(Debug, Deserialize)]
 struct GtestJson {
@@ -51,6 +57,28 @@ struct Catch2Test {
 struct Catch2SourceLocation {
     filename: PathBuf,
     line: u32,
+}
+
+pub fn find_file(search_start: &Path, to_find: &Path) -> Option<PathBuf> {
+    let file = if to_find.is_absolute() {
+        Some(Cow::Borrowed(to_find))
+    } else {
+        let mut current_dir = search_start;
+        loop {
+            let absolute_file_path = current_dir.join(to_find);
+            if absolute_file_path.exists() && absolute_file_path.is_file() {
+                break Some(Cow::Owned(absolute_file_path));
+            }
+
+            let Some(parent_dir) = current_dir.parent() else {
+                break None;
+            };
+
+            current_dir = parent_dir;
+        }
+    };
+
+    file.and_then(|file| file.canonicalize().ok())
 }
 
 pub fn get_tests_from_executables(
@@ -159,7 +187,10 @@ pub fn get_tests_from_gtest_executable(
 
                     Test {
                         name: name.clone(),
-                        file: Some(test.file.clone()),
+                        file: find_file(
+                            executable.path.parent().unwrap_or_else(|| &executable.path),
+                            &test.file,
+                        ),
                         line: Some(test.line),
                         executable: executable.clone(),
                         arguments,
@@ -230,7 +261,10 @@ pub fn get_tests_from_catch2_executable(
         })
         .map(|test| Test {
             name: test.name.clone(),
-            file: Some(test.source_location.filename.clone()),
+            file: find_file(
+                executable.path.parent().unwrap_or_else(|| &executable.path),
+                &test.source_location.filename,
+            ),
             line: Some(test.source_location.line),
             executable: executable.clone(),
             arguments: vec![test.name.clone()],
