@@ -175,15 +175,7 @@ pub fn get_tests_from_gtest_executable(
                         format!("--gtest_filter={name}"),
                         String::from("--gtest_also_run_disabled_tests"),
                     ];
-
-                    // Don't add the gtest filter since they were already filtered when fetching
-                    // them from the executable
-                    arguments.extend(
-                        extra_args
-                            .iter()
-                            .filter(|argument| !argument.starts_with("--gtest_filter="))
-                            .cloned(),
-                    );
+                    arguments.extend_from_slice(extra_args);
 
                     Test {
                         name: name.clone(),
