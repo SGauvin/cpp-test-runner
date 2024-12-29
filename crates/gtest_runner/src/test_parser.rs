@@ -56,11 +56,22 @@ struct Catch2SourceLocation {
 pub fn get_tests_from_executables(
     executables: &[Executable],
     exectuables_only: bool,
-    extra_args: &[String],
+    gtest_extra_args: &[String],
+    catch2_extra_args: &[String],
+    filter: Option<&regex::Regex>,
 ) -> Vec<Test> {
     executables
         .iter()
-        .filter_map(|exec| get_tests_from_executable(exec, exectuables_only, extra_args).ok())
+        .filter_map(|exec| {
+            get_tests_from_executable(
+                exec,
+                exectuables_only,
+                gtest_extra_args,
+                catch2_extra_args,
+                filter,
+            )
+            .ok()
+        })
         .flatten()
         .collect::<Vec<Test>>()
 }
@@ -68,15 +79,20 @@ pub fn get_tests_from_executables(
 pub fn get_tests_from_executable(
     executable: &Executable,
     exectuables_only: bool,
-    extra_args: &[String],
+    gtest_extra_args: &[String],
+    catch2_extra_args: &[String],
+    filter: Option<&regex::Regex>,
 ) -> Result<Vec<Test>> {
     match executable.executable_type {
         ExecutableType::Gtest => {
-            get_tests_from_gtest_executable(executable, exectuables_only, extra_args)
+            get_tests_from_gtest_executable(executable, exectuables_only, gtest_extra_args, filter)
         }
-        ExecutableType::Catch2 => {
-            get_tests_from_catch2_executable(executable, exectuables_only, extra_args)
-        }
+        ExecutableType::Catch2 => get_tests_from_catch2_executable(
+            executable,
+            exectuables_only,
+            catch2_extra_args,
+            filter,
+        ),
     }
 }
 
@@ -84,20 +100,12 @@ pub fn get_tests_from_gtest_executable(
     executable: &Executable,
     executable_only: bool,
     extra_args: &[String],
+    filter: Option<&regex::Regex>,
 ) -> Result<Vec<Test>> {
-    let args = {
-        let mut args = vec![
-            String::from("--gtest_list_tests"),
-            String::from("--gtest_output=json:/dev/stderr"),
-        ];
-        args.extend(
-            extra_args
-                .iter()
-                .filter(|argument| argument.starts_with("--gtest_filter="))
-                .cloned(),
-        );
-        args
-    };
+    let args = vec![
+        String::from("--gtest_list_tests"),
+        String::from("--gtest_output=json:/dev/stderr"),
+    ];
 
     let output = Command::new(&executable.path).args(args).output()?;
     if !output.status.success() {
@@ -124,31 +132,39 @@ pub fn get_tests_from_gtest_executable(
         .testsuites
         .iter()
         .flat_map(|test_suite| {
-            test_suite.testsuite.iter().map(|test| {
-                let name = test_suite.name.clone() + "." + &test.name;
+            test_suite
+                .testsuite
+                .iter()
+                .filter(|test| {
+                    filter
+                        .map(|filter| filter.is_match(&test.name))
+                        .unwrap_or(true)
+                })
+                .map(|test| {
+                    let name = test_suite.name.clone() + "." + &test.name;
 
-                let mut arguments = vec![
-                    format!("--gtest_filter={name}"),
-                    String::from("--gtest_also_run_disabled_tests"),
-                ];
+                    let mut arguments = vec![
+                        format!("--gtest_filter={name}"),
+                        String::from("--gtest_also_run_disabled_tests"),
+                    ];
 
-                // Don't add the gtest filter since they were already filtered when fetching
-                // them from the executable
-                arguments.extend(
-                    extra_args
-                        .iter()
-                        .filter(|argument| !argument.starts_with("--gtest_filter="))
-                        .cloned(),
-                );
+                    // Don't add the gtest filter since they were already filtered when fetching
+                    // them from the executable
+                    arguments.extend(
+                        extra_args
+                            .iter()
+                            .filter(|argument| !argument.starts_with("--gtest_filter="))
+                            .cloned(),
+                    );
 
-                Test {
-                    name: name.clone(),
-                    file: Some(test.file.clone()),
-                    line: Some(test.line),
-                    executable: executable.clone(),
-                    arguments,
-                }
-            })
+                    Test {
+                        name: name.clone(),
+                        file: Some(test.file.clone()),
+                        line: Some(test.line),
+                        executable: executable.clone(),
+                        arguments,
+                    }
+                })
         })
         .collect::<Vec<_>>())
 }
@@ -157,6 +173,7 @@ pub fn get_tests_from_catch2_executable(
     executable: &Executable,
     executable_only: bool,
     extra_args: &[String],
+    filter: Option<&regex::Regex>,
 ) -> Result<Vec<Test>> {
     let is_catch2_executable = {
         let output = Command::new(&executable.path)
@@ -206,6 +223,11 @@ pub fn get_tests_from_catch2_executable(
         .listings
         .tests
         .iter()
+        .filter(|test| {
+            filter
+                .map(|filter| filter.is_match(&test.name))
+                .unwrap_or(true)
+        })
         .map(|test| Test {
             name: test.name.clone(),
             file: Some(test.source_location.filename.clone()),

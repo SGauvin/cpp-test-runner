@@ -6,13 +6,14 @@ mod vscode_launch_json_formatter;
 
 use anyhow::{bail, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use executable_finder::{find_test_executables, find_test_dir, validate_executables};
-use test_parser::get_tests_from_executables;
+use executable_finder::{find_test_dir, find_test_executables, validate_executables};
 use std::path::PathBuf;
+use test_parser::get_tests_from_executables;
 use test_runner::run_all;
 use vscode_launch_json_formatter::format_tests_to_vscode_launch_json;
 
-#[derive(Parser)]
+/// A test runner that works with Gtest and Catch2
+#[derive(Debug, Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
@@ -25,7 +26,7 @@ impl Cli {
     }
 }
 
-#[derive(Default, Debug, Parser)]
+#[derive(Debug, Parser)]
 struct CommonFlags {
     #[clap(flatten)]
     input: Option<Input>,
@@ -42,12 +43,20 @@ struct CommonFlags {
     #[arg(long)]
     executables_only: bool,
 
-    /// Extra arguments to pass to the test executables.
+    /// Filter tests by their name with a regex
+    #[arg(long)]
+    filter: Option<regex::Regex>,
+
+    /// Extra arguments to pass to gtest executables.
     #[arg(long, value_delimiter = ',')]
-    extra_args: Vec<String>,
+    gtest_extra_args: Vec<String>,
+
+    /// Extra arguments to pass to catch2 executables.
+    #[arg(long, value_delimiter = ',')]
+    catch2_extra_args: Vec<String>,
 }
 
-#[derive(Args, Default, Debug)]
+#[derive(Args, Debug)]
 #[group(multiple = false)]
 struct Input {
     /// The directory where to search for gtest executables.
@@ -99,7 +108,7 @@ impl Command {
     }
 }
 
-#[derive(Default, Debug, Args)]
+#[derive(Debug, Args)]
 struct ListCommand {
     #[clap(flatten)]
     common_flags: CommonFlags,
@@ -117,7 +126,7 @@ pub enum CwdRelativeTo {
     None,
 }
 
-#[derive(Default, Debug, Args)]
+#[derive(Debug, Args)]
 struct LaunchJsonCommand {
     #[clap(flatten)]
     common_flags: CommonFlags,
@@ -155,7 +164,7 @@ struct LaunchJsonCommand {
     pretty_printing: bool,
 }
 
-#[derive(Default, Debug, Args)]
+#[derive(Debug, Args)]
 struct RunCommand {
     #[clap(flatten)]
     common_flags: CommonFlags,
@@ -199,7 +208,9 @@ fn main() -> Result<()> {
     let tests = get_tests_from_executables(
         &executables,
         args.common_flags().executables_only,
-        &args.common_flags().extra_args,
+        &args.common_flags().gtest_extra_args,
+        &args.common_flags().catch2_extra_args,
+        args.common_flags().filter.as_ref(),
     );
 
     match args.command {
