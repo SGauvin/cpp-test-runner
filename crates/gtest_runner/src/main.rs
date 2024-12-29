@@ -184,143 +184,88 @@ struct RunCommand {
 }
 
 fn main() -> Result<()> {
-    let walker = WalkBuilder::new(".")
-        .hidden(false)
-        .ignore(false)
-        .parents(false)
-        .git_ignore(false)
-        .git_global(false)
-        .git_exclude(false)
-        .require_git(false)
-        .follow_links(false)
-        .threads(0)
-        .build_parallel();
+    let args = Cli::parse();
 
-    let (tx, rx) = crossbeam::channel::bounded::<PathBuf>(100);
+    if let Some(jobs) = &args.common_flags().jobs {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(*jobs)
+            .build_global()?;
+    }
 
-    let mut vec = Vec::<PathBuf>::default();
+    let input = args.common_flags().input.as_ref();
 
-    let a = thread::scope(|scope| {
-        scope.spawn(|_| loop {
-            match rx.recv() {
-                Ok(test) => {
-                    if let Ok(Some(_)) = parse_gtest_executable(&test, false) {
-                        vec.push(test);
-                    }
-                }
-                Err(_) => {
-                    return;
-                }
+    let executables = {
+        let cli_executables = input
+            .map(|input| input.executables.clone())
+            .unwrap_or(Default::default());
+
+        if !cli_executables.is_empty() {
+            validate_executables(&cli_executables, args.common_flags().no_parent)
+        } else {
+            let test_dir = input
+                .and_then(|input| input.test_dir.clone())
+                .unwrap_or_else(|| String::from("."));
+
+            let Some(test_dir) = find_test_dir(&test_dir, args.common_flags().no_parent)? else {
+                bail!("test_dir {test_dir} not found");
+            };
+
+            find_gtest_executables(&test_dir, args.common_flags().jobs, args.elf_metadata())
+        }
+    }?;
+
+    let extra_args = args
+        .common_flags()
+        .extra_args
+        .iter()
+        .map(|x| {
+            if x.starts_with("-") {
+                x.clone()
+            } else {
+                format!("--{x}")
             }
-        });
+        })
+        .collect::<Vec<_>>();
 
-        walker.run(|| {
-            let tx = tx.clone();
-            Box::new(move |result| {
-                let path = result.as_ref().unwrap().path();
-                if path.is_file() && path.executable() {
-                    tx.send(path.to_path_buf()).unwrap();
-                }
-                ignore::WalkState::Continue
-            })
-        });
+    let tests = get_all_tests_from_executables(
+        &executables,
+        args.common_flags().executables_only,
+        &extra_args,
+    );
 
-        drop(tx);
-    });
+    match args.command {
+        Command::List(command) => match command.output {
+            OutputFormat::Json => {
+                println!("{}", serde_json::to_string(&tests)?);
+            }
+            OutputFormat::PrettyJson => {
+                println!("{}", serde_json::to_string_pretty(&tests)?);
+            }
+            OutputFormat::Plain => {
+                let all_test_names =
+                    tests
+                        .iter()
+                        .map(|test| &test.name)
+                        .fold(String::new(), |mut list, name| {
+                            list.push_str(&format!("{name}\n"));
+                            list
+                        });
+                print!("{all_test_names}");
+            }
+        },
+        Command::LaunchJson(command) => {
+            println!("{}", format_tests_to_vscode_launch_json(&tests, &command));
+        }
+        Command::Run(command) => {
+            let use_color = match command.color {
+                ColorOption::No => false,
+                ColorOption::Yes => true,
+                ColorOption::Auto => atty::is(atty::Stream::Stdout),
+            };
 
-    // Ok(vec)
-    println!("{vec:#?}");
-
-    // let args = Cli::parse();
-    //
-    // if let Some(jobs) = &args.common_flags().jobs {
-    //     rayon::ThreadPoolBuilder::new()
-    //         .num_threads(*jobs)
-    //         .build_global()?;
-    // }
-    //
-    // let input = args.common_flags().input.as_ref();
-    // let executables = {
-    //     let cli_executables = input
-    //         .map(|input| input.executables.clone())
-    //         .unwrap_or(Default::default());
-    //
-    //     if !cli_executables.is_empty() {
-    //         validate_executables(&cli_executables, args.common_flags().no_parent)
-    //     } else {
-    //         let test_dir = input
-    //             .and_then(|input| input.test_dir.clone())
-    //             .unwrap_or_else(|| String::from("."));
-    //
-    //         let Some(test_dir) = find_test_dir(&test_dir, args.common_flags().no_parent)? else {
-    //             bail!("test_dir {test_dir} not found");
-    //         };
-    //
-    //         find_gtest_executables(&test_dir, args.elf_metadata())
-    //     }
-    // }?;
-    //
-    // let extra_args = args
-    //     .common_flags()
-    //     .extra_args
-    //     .iter()
-    //     .map(|x| {
-    //         if x.starts_with("-") {
-    //             x.clone()
-    //         } else {
-    //             format!("--{x}")
-    //         }
-    //     })
-    //     .collect::<Vec<_>>();
-    //
-    // let tests = if args.common_flags().executables_only {
-    //     executables
-    //         .into_iter()
-    //         .map(|executable| Test {
-    //             name: executable.path.to_string_lossy().deref().to_string(),
-    //             file: None,
-    //             line: None,
-    //             executable,
-    //             arguments: extra_args.clone(),
-    //         })
-    //         .collect::<Vec<_>>()
-    // } else {
-    //     get_all_tests_from_executables(&executables, &extra_args)?
-    // };
-    //
-    // match args.command {
-    //     Command::List(command) => match command.output {
-    //         OutputFormat::Json => {
-    //             println!("{}", serde_json::to_string(&tests)?);
-    //         }
-    //         OutputFormat::PrettyJson => {
-    //             println!("{}", serde_json::to_string_pretty(&tests)?);
-    //         }
-    //         OutputFormat::Plain => {
-    //             let all_test_names =
-    //                 tests
-    //                     .iter()
-    //                     .map(|test| &test.name)
-    //                     .fold(String::new(), |mut list, name| {
-    //                         list.push_str(&format!("{name}\n"));
-    //                         list
-    //                     });
-    //             print!("{all_test_names}");
-    //         }
-    //     },
-    //     Command::LaunchJson(command) => {
-    //         println!("{}", format_tests_to_vscode_launch_json(&tests, &command));
-    //     }
-    //     Command::Run(command) => {
-    //         let use_color = match command.color {
-    //             ColorOption::No => false,
-    //             ColorOption::Yes => true,
-    //             ColorOption::Auto => atty::is(atty::Stream::Stdout),
-    //         };
-    //
-    //         run_all(&tests, use_color)?;
-    //     }
-    // }
+            run_all(&tests, use_color)?;
+        }
+    }
 
     Ok(())
 }

@@ -9,6 +9,7 @@ use std::{
     os::{raw::c_uchar, unix::fs::FileExt},
     path::{Path, PathBuf},
     thread,
+    time::UNIX_EPOCH,
 };
 
 pub fn find_test_dir(cli_path: &str, cli_no_parent: bool) -> Result<Option<PathBuf>> {
@@ -40,7 +41,7 @@ pub fn find_test_dir(cli_path: &str, cli_no_parent: bool) -> Result<Option<PathB
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+#[derive(Debug, Copy, Clone, Default, Pod, Zeroable)]
 pub struct Elf64Sym {
     pub st_name: u32,
     pub st_info: c_uchar,
@@ -160,6 +161,7 @@ pub fn validate_executables(
 
 pub fn find_gtest_executables(
     path: &Path,
+    jobs: Option<usize>,
     read_elf_metadata: bool,
 ) -> Result<Vec<GtestExecutable>> {
     let walker = WalkBuilder::new(path)
@@ -171,7 +173,7 @@ pub fn find_gtest_executables(
         .git_exclude(false)
         .require_git(false)
         .follow_links(false)
-        .threads(0)
+        .threads(jobs.unwrap_or_default())
         .build_parallel();
 
     let (tx, rx) = crossbeam::channel::bounded::<GtestExecutable>(100);
@@ -269,12 +271,58 @@ pub fn parse_gtest_executable(
         return Ok(None);
     };
 
-    println!(
-        "{}: {} && {}",
-        path.display(),
-        string_table.sh_type(is_little_endian),
-        string_table.sh_flags(is_little_endian) & 0x20 != 0
-    );
+    let string_table_offset = string_table.sh_offset(is_little_endian);
+    let string_table_size = string_table.sh_size(is_little_endian);
 
-    Ok(None)
+    if string_table_size == 0 {
+        return Ok(None);
+    }
+
+    let all_strings = {
+        let mut all_strings: Vec<u8> = std::iter::repeat(0)
+            .take(string_table_size as usize)
+            .collect();
+
+        file.read_exact_at(&mut all_strings, string_table_offset)?;
+        all_strings
+    };
+
+    let all_symbols = {
+        let mut all_symbols: Vec<Elf64Sym> = std::iter::repeat(Elf64Sym::default())
+            .take(symbol_table.sh_size(is_little_endian) as usize / std::mem::size_of::<Elf64Sym>())
+            .collect();
+        let all_symbols_bytes: &mut [u8] = bytemuck::try_cast_slice_mut(&mut all_symbols).unwrap();
+        file.read_exact_at(all_symbols_bytes, symbol_table.sh_offset(is_little_endian))
+            .unwrap();
+        all_symbols
+    };
+
+    let is_google_test = all_symbols.iter().find(|symbol| {
+        let symbol_string_index = symbol.st_name as usize;
+        let Some(range) = all_strings.get(symbol_string_index..) else {
+            return false;
+        };
+        let Ok(symbol_cstr) = std::ffi::CStr::from_bytes_until_nul(range) else {
+            return false;
+        };
+        let symbol_str = symbol_cstr.to_string_lossy();
+        symbol_str.contains("InitGoogleTest")
+    });
+
+    if is_google_test.is_some() {
+        Ok(Some(GtestExecutable {
+            path: path.to_path_buf(),
+            modified: path
+                .metadata()
+                .unwrap()
+                .created()
+                .unwrap()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            elf_metadata: None,
+        }))
+    } else {
+        Ok(None)
+    }
 }

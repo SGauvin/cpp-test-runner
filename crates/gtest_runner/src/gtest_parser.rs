@@ -1,7 +1,7 @@
 use crate::types::{GtestExecutable, Test};
-use anyhow::Result;
+use anyhow::{bail, Result};
 use serde::Deserialize;
-use std::process::Command;
+use std::{ops::Deref, process::Command};
 
 #[derive(Debug, Deserialize)]
 struct GtestJson {
@@ -26,17 +26,19 @@ struct GtestTest {
 
 pub fn get_all_tests_from_executables(
     executables: &[GtestExecutable],
+    exectuables_only: bool,
     extra_args: &[String],
-) -> Result<Vec<Test>> {
+) -> Vec<Test> {
     executables
         .iter()
-        .map(|exec| get_all_tests_from_executable(exec, extra_args))
-        .collect::<Result<Vec<_>>>()
-        .map(|x| x.into_iter().flatten().collect::<Vec<_>>())
+        .filter_map(|exec| get_all_tests_from_executable(exec, exectuables_only, extra_args).ok())
+        .flatten()
+        .collect::<Vec<Test>>()
 }
 
 pub fn get_all_tests_from_executable(
     executable: &GtestExecutable,
+    exectuables_only: bool,
     extra_args: &[String],
 ) -> Result<Vec<Test>> {
     let args = {
@@ -54,8 +56,24 @@ pub fn get_all_tests_from_executable(
     };
 
     let output = Command::new(&executable.path).args(args).output()?;
+    if !output.status.success() {
+        // Some executables link against gtest even if they aren't test executables (like AIDL).
+        // This here is a fail-safe that prevent these kind of executables to show up as google
+        // test executables.
+        bail!("{} is not a gtest executable!", executable.path.display());
+    }
 
     let json: GtestJson = serde_json::from_str(&String::from_utf8_lossy(&output.stderr))?;
+
+    if exectuables_only {
+        return Ok(vec![Test {
+            name: executable.path.to_string_lossy().deref().to_string(),
+            file: None,
+            line: None,
+            executable: executable.clone(),
+            arguments: extra_args.to_vec(),
+        }]);
+    }
 
     Ok(json
         .testsuites
