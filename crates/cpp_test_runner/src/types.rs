@@ -1,3 +1,4 @@
+use clap::ValueEnum;
 use serde::Serialize;
 use skim::{ItemPreview, PreviewPosition, SkimItem};
 use std::{
@@ -19,7 +20,8 @@ pub struct Executable {
     pub executable_type: ExecutableType,
 }
 
-#[derive(Debug, Serialize, Clone, PartialEq)]
+#[derive(ValueEnum, Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ExecutableType {
     Gtest,
     Catch2,

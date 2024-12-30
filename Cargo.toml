@@ -1,7 +1,7 @@
 [workspace]
 
 members = [
-    "crates/gtest_runner",
+    "crates/cpp_test_runner",
     "crates/elf_parser",
 ]
 

@@ -285,6 +285,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
+name = "cpp_test_runner"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "atty",
+ "bytemuck",
+ "clap",
+ "colored",
+ "crossbeam",
+ "elf_parser",
+ "faccess",
+ "ignore",
+ "rayon",
+ "regex",
+ "serde",
+ "serde_json",
+ "skim",
+ "syntect",
+ "tuikit",
+ "walkdir",
+]
+
+[[package]]
 name = "crc32fast"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -572,29 +595,6 @@ dependencies = [
  "log",
  "regex-automata",
  "regex-syntax",
-]
-
-[[package]]
-name = "gtest_runner"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "atty",
- "bytemuck",
- "clap",
- "colored",
- "crossbeam",
- "elf_parser",
- "faccess",
- "ignore",
- "rayon",
- "regex",
- "serde",
- "serde_json",
- "skim",
- "syntect",
- "tuikit",
- "walkdir",
 ]
 
 [[package]]

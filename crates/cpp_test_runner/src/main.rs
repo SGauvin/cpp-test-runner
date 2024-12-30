@@ -11,7 +11,7 @@ use skim::{options::SkimOptionsBuilder, Skim, SkimItemReceiver, SkimItemSender};
 use std::{borrow::Cow, path::PathBuf, sync::Arc};
 use test_parser::get_tests_from_executables;
 use test_runner::run_all;
-use types::Test;
+use types::{ExecutableType, Test};
 use vscode_launch_json_formatter::format_tests_to_vscode_launch_json;
 
 /// A test runner that works with Gtest and Catch2
@@ -49,15 +49,19 @@ struct CommonFlags {
     #[arg(long)]
     filter: Option<regex::Regex>,
 
-    /// Interactive mode
+    /// Interactive mode to fuzzy-find tests using Skim. Ctrl-A to toggle all selection.
     #[arg(short, long)]
     interactive: bool,
 
-    /// Extra arguments to pass to gtest executables.
+    /// Comma-separated list of the enabled executable types during the search.
+    #[arg(long, value_delimiter = ',', default_value = "gtest,catch2")]
+    executable_types: Vec<ExecutableType>,
+
+    /// Comma-separated list of extra arguments to pass to gtest executables.
     #[arg(long, value_delimiter = ',')]
     gtest_extra_args: Vec<String>,
 
-    /// Extra arguments to pass to catch2 executables.
+    /// Comma-separated list of extra arguments to pass to catch2 executables.
     #[arg(long, value_delimiter = ',')]
     catch2_extra_args: Vec<String>,
 }
@@ -71,7 +75,8 @@ struct Input {
     #[arg(long)]
     test_dir: Option<String>,
 
-    /// List all executables instead of searching them. Mutually exclusive with --test-dir.
+    /// Comma-separated list of all executables. Using this option will disable the automatic
+    /// search for other executables. Mutually exclusive with --test-dir
     #[arg(long, value_delimiter = ',')]
     executables: Vec<PathBuf>,
 }
@@ -207,7 +212,11 @@ fn main() -> Result<()> {
                 bail!("test_dir {test_dir} not found");
             };
 
-            find_test_executables(&test_dir, args.common_flags().jobs)
+            find_test_executables(
+                &test_dir,
+                args.common_flags().jobs,
+                &args.common_flags().executable_types,
+            )
         }
     }?;
 
@@ -219,7 +228,7 @@ fn main() -> Result<()> {
         args.common_flags().filter.as_ref(),
     );
 
-    let tests = if args.common_flags().interactive {
+    let tests = if args.common_flags().interactive && !tests.is_empty() {
         let options = SkimOptionsBuilder::default()
             .multi(true)
             .bind(vec![String::from("ctrl-a:toggle-all")])

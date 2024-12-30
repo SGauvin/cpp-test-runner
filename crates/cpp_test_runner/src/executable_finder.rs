@@ -42,9 +42,9 @@ pub fn validate_executables(executables: &[PathBuf]) -> Result<Vec<Executable>> 
     executables
         .par_iter()
         .map(|path| {
-            let Ok(Some(gtest_executable)) = parse_test_executable(path) else {
+            let Ok(Some(gtest_executable)) = parse_test_executable(path, true, true) else {
                 return Err(anyhow!(format!(
-                    "{} is not a gtest executable",
+                    "{} is not a test executable",
                     path.display()
                 )));
             };
@@ -53,7 +53,11 @@ pub fn validate_executables(executables: &[PathBuf]) -> Result<Vec<Executable>> 
         .collect::<Result<Vec<_>>>()
 }
 
-pub fn find_test_executables(path: &Path, jobs: Option<usize>) -> Result<Vec<Executable>> {
+pub fn find_test_executables(
+    path: &Path,
+    jobs: Option<usize>,
+    executable_types: &[ExecutableType],
+) -> Result<Vec<Executable>> {
     let walker = WalkBuilder::new(path)
         .hidden(false)
         .ignore(false)
@@ -68,13 +72,16 @@ pub fn find_test_executables(path: &Path, jobs: Option<usize>) -> Result<Vec<Exe
 
     let (tx, rx) = crossbeam::channel::bounded::<Executable>(100);
 
-    let mut vec = Vec::<Executable>::default();
+    let is_gtest_enabled = executable_types.contains(&ExecutableType::Gtest);
+    let is_catch2_enabled = executable_types.contains(&ExecutableType::Catch2);
+
+    let mut tests = Vec::<Executable>::default();
 
     thread::scope(|scope| {
         scope.spawn(|| loop {
             match rx.recv() {
                 Ok(test) => {
-                    vec.push(test);
+                    tests.push(test);
                 }
                 Err(_) => {
                     return;
@@ -87,7 +94,9 @@ pub fn find_test_executables(path: &Path, jobs: Option<usize>) -> Result<Vec<Exe
             Box::new(move |result| {
                 let path = result.as_ref().unwrap().path();
                 if path.is_file() && path.executable() {
-                    if let Ok(Some(executable)) = parse_test_executable(path) {
+                    if let Ok(Some(executable)) =
+                        parse_test_executable(path, is_gtest_enabled, is_catch2_enabled)
+                    {
                         tx.send(executable).unwrap();
                     }
                 }
@@ -98,10 +107,14 @@ pub fn find_test_executables(path: &Path, jobs: Option<usize>) -> Result<Vec<Exe
         drop(tx);
     });
 
-    Ok(vec)
+    Ok(tests)
 }
 
-pub fn parse_test_executable(path: &Path) -> Result<Option<Executable>> {
+pub fn parse_test_executable(
+    path: &Path,
+    is_gtest_enabled: bool,
+    is_catch2_enabled: bool,
+) -> Result<Option<Executable>> {
     let elf = Elf::new(path)?;
 
     let elf_type = elf.header.e_type();
@@ -134,9 +147,9 @@ pub fn parse_test_executable(path: &Path) -> Result<Option<Executable>> {
             .get_symbol_name(symbol)
             .map(|symbol_cstr| symbol_cstr.to_string_lossy())
             .and_then(|symbol| {
-                if symbol.contains("InitGoogleTest") {
+                if is_gtest_enabled && symbol.contains("InitGoogleTest") {
                     Some(ExecutableType::Gtest)
-                } else if symbol.contains("Catch2") {
+                } else if is_catch2_enabled && symbol.contains("Catch2") {
                     Some(ExecutableType::Catch2)
                 } else {
                     None
