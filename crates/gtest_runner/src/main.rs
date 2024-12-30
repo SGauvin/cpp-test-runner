@@ -223,6 +223,7 @@ fn main() -> Result<()> {
         let options = SkimOptionsBuilder::default()
             .multi(true)
             .bind(vec![String::from("ctrl-a:toggle-all")])
+            .preview(Some(String::new()))
             .build()
             .unwrap();
 
