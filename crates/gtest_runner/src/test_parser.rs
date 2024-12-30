@@ -3,7 +3,6 @@ use anyhow::{bail, Result};
 use serde::Deserialize;
 use std::{
     borrow::Cow,
-    env::current_dir,
     ops::Deref,
     path::{Path, PathBuf},
     process::Command,
@@ -153,6 +152,7 @@ pub fn get_tests_from_gtest_executable(
             line: None,
             executable: executable.clone(),
             arguments: extra_args.to_vec(),
+            index: None,
         }]);
     }
 
@@ -186,6 +186,7 @@ pub fn get_tests_from_gtest_executable(
                         line: Some(test.line),
                         executable: executable.clone(),
                         arguments,
+                        index: None,
                     }
                 })
         })
@@ -225,6 +226,7 @@ pub fn get_tests_from_catch2_executable(
             line: None,
             executable: executable.clone(),
             arguments: extra_args.to_vec(),
+            index: None,
         }]);
     }
 
@@ -260,6 +262,7 @@ pub fn get_tests_from_catch2_executable(
             line: Some(test.source_location.line),
             executable: executable.clone(),
             arguments: vec![test.name.clone()],
+            index: None,
         })
         .collect::<Vec<_>>())
 }

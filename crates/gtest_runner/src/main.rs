@@ -7,9 +7,11 @@ mod vscode_launch_json_formatter;
 use anyhow::{bail, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use executable_finder::{find_test_dir, find_test_executables, validate_executables};
-use std::path::PathBuf;
+use skim::{options::SkimOptionsBuilder, Skim, SkimItemReceiver, SkimItemSender};
+use std::{borrow::Cow, path::PathBuf, sync::Arc};
 use test_parser::get_tests_from_executables;
 use test_runner::run_all;
+use types::Test;
 use vscode_launch_json_formatter::format_tests_to_vscode_launch_json;
 
 /// A test runner that works with Gtest and Catch2
@@ -46,6 +48,10 @@ struct CommonFlags {
     /// Filter tests by their name with a regex
     #[arg(long)]
     filter: Option<regex::Regex>,
+
+    /// Interactive mode
+    #[arg(short, long)]
+    interactive: bool,
 
     /// Extra arguments to pass to gtest executables.
     #[arg(long, value_delimiter = ',')]
@@ -212,6 +218,37 @@ fn main() -> Result<()> {
         &args.common_flags().catch2_extra_args,
         args.common_flags().filter.as_ref(),
     );
+
+    let tests = if args.common_flags().interactive {
+        let options = SkimOptionsBuilder::default()
+            .multi(true)
+            .bind(vec![String::from("ctrl-a:toggle-all")])
+            .build()
+            .unwrap();
+
+        let (tx_item, rx_item): (SkimItemSender, SkimItemReceiver) = skim::prelude::unbounded();
+
+        for (index, test) in tests.iter().enumerate() {
+            tx_item
+                .send(Arc::new(test.clone_with_index(index)))
+                .unwrap();
+        }
+        drop(tx_item);
+
+        let selected_items = Skim::run_with(&options, Some(rx_item))
+            .map(|out| out.selected_items)
+            .map(|selected_items| {
+                selected_items
+                    .into_iter()
+                    .map(|item| item.as_any().downcast_ref::<Test>().unwrap().clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        Cow::Owned(selected_items)
+    } else {
+        Cow::Borrowed(&tests)
+    };
 
     match args.command {
         Command::List(command) => match command.output {

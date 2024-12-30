@@ -1,5 +1,6 @@
 use serde::Serialize;
-use std::path::PathBuf;
+use skim::SkimItem;
+use std::{borrow::Cow, path::PathBuf};
 
 #[derive(Debug, Serialize, Clone)]
 pub struct Executable {
@@ -23,4 +24,29 @@ pub struct Test {
     pub line: Option<u32>,
     pub executable: Executable,
     pub arguments: Vec<String>,
+
+    #[serde(skip_serializing)]
+    pub index: Option<usize>,
+}
+
+impl SkimItem for Test {
+    fn text(&self) -> Cow<str> {
+        Cow::Borrowed(&self.name)
+    }
+
+    fn get_index(&self) -> usize {
+        self.index.unwrap_or_default()
+    }
+
+    fn set_index(&mut self, index: usize) {
+        self.index = Some(index);
+    }
+}
+
+impl Test {
+    pub fn clone_with_index(&self, index: usize) -> Self {
+        let mut clone = self.clone();
+        clone.set_index(index);
+        clone
+    }
 }
