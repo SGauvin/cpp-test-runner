@@ -1,6 +1,6 @@
 # C++ Test Runner
 
-A CLI tool to find and execute all [`GoogleTest`](https://github.com/google/googletest) and [`Catch2`](https://github.com/catchorg/Catch2) tests.
+A build-system agnostic CLI tool that finds and executes all [`GoogleTest`](https://github.com/google/googletest) and [`Catch2`](https://github.com/catchorg/Catch2) tests in a directory.
 
 ## Features
 
